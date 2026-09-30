@@ -23,6 +23,7 @@ from app.analyzer import LLMAnalysisResult
 from app.config import get_settings
 from app.llm import get_llm_client
 from app.main import app
+from app.rag import BaseRetriever, TechniqueCandidate, get_retriever
 from app.schemas import Severity
 
 _T = TypeVar("_T", bound=BaseModel)
@@ -41,6 +42,7 @@ class FakeLLMClient:
             severity=Severity.info,
             summary="Stub: benign log activity.",
             evidence=[],
+            techniques=[],
             injection_flagged=False,
         )
         self.exception = exception
@@ -64,6 +66,22 @@ class FakeLLMClient:
         if self.exception is not None:
             raise self.exception
         return self.result  # type: ignore[return-value]
+
+
+class FakeRetriever(BaseRetriever):
+    """In-memory fake replacing ChromaRetriever during tests."""
+
+    def __init__(self, candidates: list[TechniqueCandidate] | None = None) -> None:
+        self.candidates: list[TechniqueCandidate] = (
+            list(candidates) if candidates is not None else []
+        )
+        self.queries: list[str] = []
+
+    async def retrieve(
+        self, query: str, top_k: int = 5
+    ) -> list[TechniqueCandidate]:
+        self.queries.append(query)
+        return self.candidates[:top_k]
 
 
 @pytest.fixture()
@@ -96,3 +114,12 @@ def fake_llm() -> FakeLLMClient:
     app.dependency_overrides[get_llm_client] = lambda: fake
     yield fake
     app.dependency_overrides.pop(get_llm_client, None)
+
+
+@pytest.fixture(autouse=True)
+def fake_retriever() -> FakeRetriever:
+    """Inject a FakeRetriever by default for all tests."""
+    fake = FakeRetriever()
+    app.dependency_overrides[get_retriever] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_retriever, None)

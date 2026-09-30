@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     embedding_model: str = Field(
         "text-embedding-3-small", description="Text embedding model name."
     )
+    chroma_persist_dir: str = Field(
+        "chroma_db", description="Directory for persistent Chroma store."
+    )
 
     # --- API auth (comma-separated list of accepted keys) ---
     sentinel_api_keys: str = Field(
