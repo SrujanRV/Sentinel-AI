@@ -1,0 +1,18 @@
+# Web framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+
+# Data validation
+pydantic==2.11.4
+pydantic-settings==2.9.1
+
+# OpenAI SDK
+openai==1.82.1
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.26.0
+httpx==0.28.1          # ASGI test client for FastAPI
+
+# Linting / formatting
+ruff==0.11.12

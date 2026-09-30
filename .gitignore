@@ -1,0 +1,45 @@
+# === Secrets & local config ===
+.env
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === Virtual environments ===
+venv/
+.venv/
+env/
+.env/
+
+# === Testing & coverage ===
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# === Ruff / linters ===
+.ruff_cache/
+
+# === Vector store (generated at runtime) ===
+vector_store/
+chroma_db/
+
+# === IDE ===
+.vscode/
+.idea/
+*.iml
+
+# === Docker ===
+*.dockerignore
+
+# === OS ===
+.DS_Store
+Thumbs.db
