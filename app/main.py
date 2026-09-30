@@ -3,6 +3,7 @@
 from fastapi import Depends, FastAPI
 
 from app.dependencies import verify_api_key
+from app.sanitize import sanitize
 from app.schemas import AlertAnalysis, AnalyzeRequest, Severity
 
 app = FastAPI(
@@ -28,14 +29,28 @@ async def health() -> dict[str, str]:
 async def analyze(request: AnalyzeRequest) -> AlertAnalysis:
     """Classify and summarize log events.
 
-    Stub response until the LLM pipeline is wired in the next step.
-    Auth is enforced via the X-API-Key header dependency above.
+    Every event field is sanitized (normalized + injection-detected +
+    redacted) before any further processing.  The LLM pipeline is wired
+    in the next step; for now a stub response is returned.
     """
+    injection_flagged = False
+
+    for event in request.events:
+        # Sanitize every text field that carries untrusted log content.
+        fields_to_check = [event.message, event.source, event.host]
+        if event.user:
+            fields_to_check.append(event.user)
+
+        for raw in fields_to_check:
+            result = sanitize(raw)
+            if result.injection_flagged:
+                injection_flagged = True
+
     return AlertAnalysis(
         severity=Severity.info,
         summary="Stub: analysis pipeline not yet implemented.",
         evidence=[],
         techniques=[],
-        injection_flagged=False,
+        injection_flagged=injection_flagged,
         tool_actions=[],
     )
