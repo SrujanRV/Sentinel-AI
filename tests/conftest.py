@@ -7,6 +7,7 @@ the lru_cache before every test so per-test monkeypatches take effect.
 """
 
 import os
+from typing import Any, TypeVar
 
 # ── Must precede any app.* import ─────────────────────────────────────────
 os.environ.setdefault("OPENAI_API_KEY", "test-key-not-real")
@@ -16,9 +17,53 @@ os.environ.setdefault("LOG_LEVEL", "DEBUG")
 # ──────────────────────────────────────────────────────────────────────────
 
 import pytest
+from pydantic import BaseModel
 
+from app.analyzer import LLMAnalysisResult
 from app.config import get_settings
+from app.llm import get_llm_client
 from app.main import app
+from app.schemas import Severity
+
+_T = TypeVar("_T", bound=BaseModel)
+
+
+class FakeLLMClient:
+    """In-memory fake replacing the real AsyncOpenAI LLMClient during tests."""
+
+    def __init__(
+        self,
+        result: LLMAnalysisResult | None = None,
+        exception: Exception | None = None,
+        side_effects: list[Any] | None = None,
+    ) -> None:
+        self.result = result or LLMAnalysisResult(
+            severity=Severity.info,
+            summary="Stub: benign log activity.",
+            evidence=[],
+            injection_flagged=False,
+        )
+        self.exception = exception
+        self.side_effects: list[Any] = list(side_effects) if side_effects else []
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        response_model: type[_T],
+    ) -> _T:
+        self.calls.append(
+            {"system": system, "user": user, "response_model": response_model}
+        )
+        if self.side_effects:
+            item = self.side_effects.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item  # type: ignore[return-value]
+        if self.exception is not None:
+            raise self.exception
+        return self.result  # type: ignore[return-value]
 
 
 @pytest.fixture()
@@ -42,3 +87,12 @@ def _patch_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_llm() -> FakeLLMClient:
+    """Inject a FakeLLMClient by default for all tests to protect the network."""
+    fake = FakeLLMClient()
+    app.dependency_overrides[get_llm_client] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_llm_client, None)
