@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     chroma_persist_dir: str = Field(
         "chroma_db", description="Directory for persistent Chroma store."
     )
+    abuseipdb_api_key: str | None = Field(
+        None, description="Optional AbuseIPDB API key."
+    )
+    sqlite_db_path: str = Field(
+        "tickets.db", description="Path to SQLite database for tickets."
+    )
 
     # --- API auth (comma-separated list of accepted keys) ---
     sentinel_api_keys: str = Field(

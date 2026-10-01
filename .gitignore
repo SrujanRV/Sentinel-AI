@@ -28,9 +28,11 @@ coverage.xml
 # === Ruff / linters ===
 .ruff_cache/
 
-# === Vector store (generated at runtime) ===
+# === Vector store & Databases (generated at runtime) ===
 vector_store/
 chroma_db/
+*.db
+*.sqlite3
 
 # === IDE ===
 .vscode/

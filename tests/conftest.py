@@ -37,6 +37,7 @@ class FakeLLMClient:
         result: LLMAnalysisResult | None = None,
         exception: Exception | None = None,
         side_effects: list[Any] | None = None,
+        tool_requests: list[list[dict[str, Any]]] | None = None,
     ) -> None:
         self.result = result or LLMAnalysisResult(
             severity=Severity.info,
@@ -47,16 +48,42 @@ class FakeLLMClient:
         )
         self.exception = exception
         self.side_effects: list[Any] = list(side_effects) if side_effects else []
+        self.tool_requests: list[list[dict[str, Any]]] = (
+            list(tool_requests) if tool_requests else []
+        )
         self.calls: list[dict[str, Any]] = []
+        self.tool_call_queries: list[dict[str, Any]] = []
 
-    async def complete(
+    async def request_tools(
         self,
-        system: str,
-        user: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        self.tool_call_queries.append({"messages": messages, "tools": tools})
+        if self.tool_requests:
+            return self.tool_requests.pop(0)
+        return []
+
+    async def complete_messages(
+        self,
+        messages: list[dict[str, Any]],
         response_model: type[_T],
     ) -> _T:
+        system = ""
+        user = ""
+        for m in messages:
+            if m.get("role") == "system":
+                system = str(m.get("content", ""))
+            elif m.get("role") == "user":
+                user = str(m.get("content", ""))
+
         self.calls.append(
-            {"system": system, "user": user, "response_model": response_model}
+            {
+                "system": system,
+                "user": user,
+                "messages": messages,
+                "response_model": response_model,
+            }
         )
         if self.side_effects:
             item = self.side_effects.pop(0)
@@ -66,6 +93,18 @@ class FakeLLMClient:
         if self.exception is not None:
             raise self.exception
         return self.result  # type: ignore[return-value]
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        response_model: type[_T],
+    ) -> _T:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        return await self.complete_messages(messages, response_model)
 
 
 class FakeRetriever(BaseRetriever):

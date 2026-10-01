@@ -5,7 +5,8 @@ Tests substitute a FakeLLMClient via FastAPI dependency_overrides so the
 real API is never called during test runs.
 """
 
-from typing import TypeVar
+import json
+from typing import Any, TypeVar
 
 from fastapi import Depends
 from openai import AsyncOpenAI
@@ -17,15 +18,61 @@ _T = TypeVar("_T", bound=BaseModel)
 
 
 class LLMClient:
-    """Wraps AsyncOpenAI SDK with structured-output (Pydantic) parsing.
-
-    One instance per request via get_llm_client so tests can inject a fake
-    without any monkey-patching of module globals.
-    """
+    """Wraps AsyncOpenAI SDK with structured-output and tool calling capabilities."""
 
     def __init__(self, settings: Settings) -> None:
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._model = settings.openai_model
+
+    async def request_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Call the model with available tools and return any requested tool calls."""
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,  # type: ignore[arg-type]
+            tools=tools,  # type: ignore[arg-type]
+            temperature=0.0,
+        )
+        choice = response.choices[0].message
+        if not choice.tool_calls:
+            return []
+
+        calls: list[dict[str, Any]] = []
+        for tc in choice.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                args = tc.function.arguments
+            calls.append(
+                {
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "args": args,
+                }
+            )
+        return calls
+
+    async def complete_messages(
+        self,
+        messages: list[dict[str, Any]],
+        response_model: type[_T],
+    ) -> _T:
+        """Parse structured output from a conversation history."""
+        response = await self._client.beta.chat.completions.parse(
+            model=self._model,
+            messages=messages,  # type: ignore[arg-type]
+            response_format=response_model,
+            temperature=0.0,
+        )
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
+            raise ValueError(
+                "LLM returned null structured output (model may have refused)."
+            )
+        return parsed  # type: ignore[return-value]
 
     async def complete(
         self,
@@ -33,36 +80,12 @@ class LLMClient:
         user: str,
         response_model: type[_T],
     ) -> _T:
-        """Call the chat completion API and parse the response into *response_model*.
-
-        Args:
-            system: System-prompt text (static, trusted).
-            user:   User-turn text (contains sanitized log content only).
-            response_model: Pydantic model class for structured output.
-
-        Returns:
-            An instance of *response_model* populated from the model's reply.
-
-        Raises:
-            ValueError: If the model returns null structured output (refusal).
-            openai.APIError: On network or API-level failures.
-        """
-        response = await self._client.beta.chat.completions.parse(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            response_format=response_model,
-            temperature=0.0,
-        )
-        parsed = response.choices[0].message.parsed
-        if parsed is None:
-            raise ValueError(
-                "LLM returned null structured output "
-                "(model may have refused the request)."
-            )
-        return parsed  # type: ignore[return-value]
+        """Convenience method calling complete_messages with system and user turns."""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        return await self.complete_messages(messages, response_model)
 
 
 def get_llm_client(settings: Settings = Depends(get_settings)) -> LLMClient:

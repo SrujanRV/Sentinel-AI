@@ -1,18 +1,30 @@
-"""Log event analysis pipeline.
+"""Log event analysis pipeline with RAG retrieval and tool calling loop.
 
 Responsibility chain:
     sanitize each field -> retrieve top technique candidates (RAG) ->
-    build numbered <logs> & <candidate_techniques> blocks -> call LLM ->
+    build numbered <logs> & <candidate_techniques> blocks ->
+    run tool execution loop (policy-checked) -> call LLM for assessment ->
     drop hallucinated technique IDs -> merge injection flags -> return AlertAnalysis.
 """
 
+import json
+from typing import Any
+
 from pydantic import BaseModel, Field
 
+from app.config import Settings, get_settings
 from app.llm import LLMClient
 from app.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from app.rag import BaseRetriever, TechniqueCandidate
 from app.sanitize import sanitize
 from app.schemas import AlertAnalysis, LogEvent, Severity, TechniqueMatch
+from app.tools import (
+    MAX_TOOL_CALLS,
+    TOOL_DEFINITIONS,
+    ToolExecutor,
+    create_tool_executor,
+    extract_observed_ips,
+)
 
 _MAX_ATTEMPTS = 2
 
@@ -85,7 +97,7 @@ def _build_log_block(events: list[LogEvent]) -> tuple[str, bool, str]:
         parts.append(f"msg={sanitized['msg']}")
         lines.append(" | ".join(parts))
 
-    query_text = " ".join(messages[:10])  # Use sanitized messages for query
+    query_text = " ".join(messages[:10])
     return "\n".join(lines), sanitizer_flagged, query_text
 
 
@@ -103,15 +115,13 @@ async def analyze_events(
     events: list[LogEvent],
     client: LLMClient,
     retriever: BaseRetriever,
+    tool_executor: ToolExecutor | None = None,
+    settings: Settings | None = None,
 ) -> AlertAnalysis:
-    """Sanitize events, retrieve candidates, call LLM with retry.
-
-    Technique IDs returned by the model are strictly validated against retrieved
-    candidates; any hallucinated ID not present in the candidate set is dropped.
-    """
+    """Sanitize events, retrieve candidates, execute tool loop, return analysis."""
     log_block, sanitizer_flagged, query_text = _build_log_block(events)
 
-    # Retrieve candidate techniques via RAG
+    # 1. Retrieve candidate techniques via RAG
     candidates = await retriever.retrieve(query=query_text, top_k=5)
     candidates_block = _format_candidates_block(candidates)
 
@@ -120,13 +130,82 @@ async def analyze_events(
         candidates_block=candidates_block,
     )
 
+    # 2. Initialize tool executor if not injected
+    if tool_executor is None:
+        if settings is None:
+            settings = get_settings()
+        allowed_ips = extract_observed_ips(events)
+        tool_executor = create_tool_executor(
+            settings=settings,
+            allowed_ips=allowed_ips,
+            injection_flagged=sanitizer_flagged,
+        )
+
+    # 3. Tool execution loop (LLM can request tools, policy validates/executes)
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    tool_actions: list[dict[str, Any]] = []
+
+    for _ in range(MAX_TOOL_CALLS):
+        tool_requests = await client.request_tools(messages, tools=TOOL_DEFINITIONS)
+        if not tool_requests:
+            break
+
+        for req in tool_requests:
+            name = req["name"]
+            raw_args = req["args"]
+            call_id = req.get("id", f"call_{len(tool_actions) + 1}")
+
+            action_record = await tool_executor.execute(name, raw_args)
+            tool_actions.append(action_record)
+
+            # Record assistant call turn
+            formatted_args = (
+                json.dumps(raw_args)
+                if not isinstance(raw_args, str)
+                else raw_args
+            )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": formatted_args},
+                        }
+                    ],
+                }
+            )
+
+            # Feed tool result back as untrusted data
+            result_payload = (
+                action_record["result"]
+                if action_record["status"] == "executed"
+                else {"denial_reason": action_record["denial_reason"]}
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(result_payload),
+                }
+            )
+
+        if tool_executor.policy.call_count >= tool_executor.policy.max_calls:
+            break
+
+    # 4. Final structured assessment from conversation history
     llm_result: LLMAnalysisResult | None = None
     last_exc: BaseException | None = None
 
     for _ in range(_MAX_ATTEMPTS):
         try:
-            llm_result = await client.complete(
-                SYSTEM_PROMPT, user_content, LLMAnalysisResult
+            llm_result = await client.complete_messages(
+                messages, LLMAnalysisResult
             )
             break
         except Exception as exc:
@@ -135,7 +214,7 @@ async def analyze_events(
     if llm_result is None:
         raise AnalysisError("LLM pipeline failed after retries.") from last_exc
 
-    # Anti-hallucination guard: DROP any technique not in retrieved candidates
+    # 5. Anti-hallucination guard: DROP any technique not in retrieved candidates
     valid_ids = {c.technique_id for c in candidates}
     verified_techniques = [
         t for t in llm_result.techniques if t.technique_id in valid_ids
@@ -147,5 +226,5 @@ async def analyze_events(
         evidence=llm_result.evidence,
         techniques=verified_techniques,
         injection_flagged=sanitizer_flagged or llm_result.injection_flagged,
-        tool_actions=[],
+        tool_actions=tool_actions,
     )
