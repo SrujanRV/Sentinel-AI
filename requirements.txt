@@ -1,5 +1,6 @@
 # Web framework
-fastapi==0.115.12
+fastapi>=0.142.0
+starlette>=1.7.0
 uvicorn[standard]==0.34.3
 
 # Data validation
@@ -13,9 +14,10 @@ openai==1.82.1
 chromadb==1.5.9
 
 # Testing
-pytest==8.3.5
-pytest-asyncio==0.26.0
+pytest>=9.1.1
+pytest-asyncio>=1.4.0
 httpx==0.28.1          # ASGI test client for FastAPI
 
 # Linting / formatting
 ruff==0.11.12
+

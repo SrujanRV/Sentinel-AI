@@ -1,0 +1,14 @@
+# ── Trivy Vulnerability Exception List ─────────────────────────────────────────
+#
+# Documented exception mechanism for Trivy container security scans.
+# Vulnerabilities listed here will be ignored by CI scan steps.
+#
+# Rules for adding exceptions:
+# 1. State the CVE / GHSA identifier.
+# 2. State the affected package and current version.
+# 3. Justify why the risk is acceptable (e.g. not reachable in runtime,
+#    no patch available upstream yet, or mitigated by runtime policy).
+# 4. Include an expiry/review date.
+#
+# Example:
+# CVE-2023-0000 # Package: libxyz; Justification: not invoked at runtime; Review: 2026-12-01
